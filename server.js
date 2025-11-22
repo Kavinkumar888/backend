@@ -11,19 +11,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+
+// ✅ IMPORTANT: Render provides PORT through environment variable
+const PORT = process.env.PORT || 10000;
 
 // MongoDB URI
-const MONGODB_URI =
-  process.env.MONGODB_URI ||
-  'mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/textile_store?retryWrites=true&w=majority';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/textile_store?retryWrites=true&w=majority';
 
 // ✅ FIXED CORS FOR HOSTINGER + RENDER + LOCAL
 app.use(
   cors({
     origin: [
       "https://sssventures.in",
-       "https://www.sssventures.in",     // <---- REPLACE WITH YOUR HOSTINGER DOMAIN
+      "https://www.sssventures.in",
       "http://localhost:5173",
       "http://localhost:3000"
     ],
@@ -91,7 +91,10 @@ const Product = mongoose.model("Product", productSchema);
 // ---------- DB CONNECT ----------
 async function connectToDatabase() {
   try {
-    await mongoose.connect(MONGODB_URI);
+    await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
     console.log("✅ MongoDB Connected Successfully");
   } catch (error) {
     console.error("❌ MongoDB Connection Error:", error);
@@ -247,7 +250,11 @@ app.get("/api/products/search/:q", async (req, res) => {
   try {
     const q = req.params.q;
     const products = await Product.find({
-      $or: [{ name: { $regex: q, $options: "i" } }],
+      $or: [
+        { name: { $regex: q, $options: "i" } },
+        { mainCategory: { $regex: q, $options: "i" } },
+        { subCategory: { $regex: q, $options: "i" } }
+      ],
     });
 
     const result = products.map((p) => {
@@ -264,11 +271,25 @@ app.get("/api/products/search/:q", async (req, res) => {
   }
 });
 
+// ✅ ADD ROOT ENDPOINT FOR RENDER
+app.get("/", (req, res) => {
+  res.json({
+    message: "SSS Ventures Textile API Server",
+    status: "Running",
+    endpoints: {
+      health: "/api/health",
+      products: "/api/products",
+      documentation: "Visit /api/health for server status"
+    }
+  });
+});
+
 // ---------- START SERVER ----------
 async function startServer() {
   await connectToDatabase();
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🔗 Health check: http://0.0.0.0:${PORT}/api/health`);
   });
 }
 

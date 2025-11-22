@@ -10,20 +10,31 @@ const PORT = process.env.PORT || 10000;
 // MongoDB URI
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/textile_store?retryWrites=true&w=majority';
 
-// ✅ FIXED CORS
+// ✅ ENHANCED CORS CONFIG
 app.use(
   cors({
-    origin: [
-      "https://sssventures.in",
-      "https://www.sssventures.in",
-      "http://localhost:5173",
-      "http://localhost:3000"
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
+    origin: function (origin, callback) {
+      const allowedOrigins = [
+        "https://sssventures.in",
+        "https://www.sssventures.in",
+        "http://localhost:5173",
+        "http://localhost:3000"
+      ];
+      
+      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    credentials: true
   })
 );
+
+// Handle preflight
+app.options('*', cors());
 
 // Middlewares
 app.use(express.json({ limit: "50mb" }));
@@ -121,7 +132,24 @@ app.get("/api/products", async (req, res) => {
   }
 });
 
-// ---------- CREATE PRODUCT (FIXED) ----------
+// ---------- GET SINGLE PRODUCT ----------
+app.get("/api/products/:id", async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) return res.status(404).json({ error: "Product not found" });
+
+    const obj = product.toObject();
+    if (obj.image && obj.image.data) {
+      obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
+    }
+
+    res.json(obj);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------- CREATE PRODUCT ----------
 app.post("/api/products", upload.single("image"), async (req, res) => {
   try {
     const imageData = req.file ? {
@@ -129,7 +157,6 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
       contentType: req.file.mimetype,
     } : null;
 
-    // ✅ FIXED: Handle specifications parsing safely
     let specifications = {};
     if (req.body.specifications) {
       try {
@@ -174,7 +201,7 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
   }
 });
 
-// ---------- UPDATE PRODUCT (FIXED) ----------
+// ---------- UPDATE PRODUCT ----------
 app.put("/api/products/:id", upload.single("image"), async (req, res) => {
   try {
     let specifications = {};
@@ -234,7 +261,62 @@ app.put("/api/products/:id", upload.single("image"), async (req, res) => {
   }
 });
 
-// ... (other routes remain the same)
+// ---------- DELETE PRODUCT ----------
+app.delete("/api/products/:id", async (req, res) => {
+  try {
+    const deleted = await Product.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Not found" });
+
+    res.json({ message: "Deleted", product: deleted.name });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------- CATEGORY FILTER ----------
+app.get("/api/products/category/:cat", async (req, res) => {
+  try {
+    const products = await Product.find({ mainCategory: req.params.cat });
+
+    const result = products.map((p) => {
+      const obj = p.toObject();
+      if (obj.image && obj.image.data) {
+        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
+      }
+      return obj;
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ---------- SEARCH ----------
+app.get("/api/products/search/:q", async (req, res) => {
+  try {
+    const q = req.params.q;
+    const products = await Product.find({
+      $or: [
+        { name: { $regex: q, $options: "i" } },
+        { mainCategory: { $regex: q, $options: "i" } },
+        { subCategory: { $regex: q, $options: "i" } }
+      ],
+    });
+
+    const result = products.map((p) => {
+      const obj = p.toObject();
+      if (obj.image && obj.image.data) {
+        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
+      }
+      return obj;
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ✅ ROOT ENDPOINT
 app.get("/", (req, res) => {
@@ -249,11 +331,26 @@ app.get("/", (req, res) => {
   });
 });
 
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error("🚨 Server Error:", error);
+  res.status(500).json({ 
+    error: "Internal Server Error",
+    message: error.message 
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
+});
+
 // ---------- START SERVER ----------
 async function startServer() {
   await connectToDatabase();
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🌐 CORS Enabled for: sssventures.in, localhost:5173, localhost:3000`);
     console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
   });
 }

@@ -10,44 +10,37 @@ const PORT = process.env.PORT || 10000;
 // MongoDB URI
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/textile_store?retryWrites=true&w=majority';
 
-// ✅ ENHANCED CORS CONFIG
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      const allowedOrigins = [
-        "https://sssventures.in",
-        "https://www.sssventures.in",
-        "http://localhost:5173",
-        "http://localhost:3000"
-      ];
-      
-      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-    credentials: true
-  })
-);
+// ✅ CORS CONFIG
+app.use(cors({
+  origin: [
+    "https://sssventures.in",
+    "https://www.sssventures.in", 
+    "http://localhost:5173",
+    "http://localhost:3000"
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  credentials: true
+}));
 
-// Handle preflight
 app.options('*', cors());
 
 // Middlewares
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
-// Multer for image upload
+// ✅ STRICT IMAGE UPLOAD - 1MB LIMIT
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // Strict 1MB limit
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only images allowed"), false);
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPG, PNG, and WebP images are allowed'), false);
+    }
   }
 });
 
@@ -77,7 +70,10 @@ const productSchema = new mongoose.Schema(
       weave: String,
       finish: String,
     },
-    image: { data: Buffer, contentType: String },
+    image: { 
+      data: { type: Buffer, required: true },
+      contentType: { type: String, required: true }
+    },
     imageUrl: String,
     productUrl: String,
     inStock: { type: Boolean, default: true },
@@ -149,13 +145,23 @@ app.get("/api/products/:id", async (req, res) => {
   }
 });
 
-// ---------- CREATE PRODUCT ----------
+// ---------- STRICT CREATE PRODUCT (IMAGE REQUIRED) ----------
 app.post("/api/products", upload.single("image"), async (req, res) => {
   try {
-    const imageData = req.file ? {
+    // ✅ STRICT: Image is required
+    if (!req.file) {
+      return res.status(400).json({ error: "Product image is required" });
+    }
+
+    // ✅ STRICT: Validate file size
+    if (req.file.size > 1 * 1024 * 1024) {
+      return res.status(400).json({ error: "Image size must be less than 1MB" });
+    }
+
+    const imageData = {
       data: req.file.buffer,
       contentType: req.file.mimetype,
-    } : null;
+    };
 
     let specifications = {};
     if (req.body.specifications) {
@@ -183,7 +189,7 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
       finish: req.body.finish,
       specifications: specifications,
       productUrl: req.body.productUrl,
-      image: imageData,
+      image: imageData, // ✅ Image is required
     };
 
     const product = new Product(productData);
@@ -194,6 +200,7 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
       obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
     }
 
+    console.log(`✅ Product created: ${saved.name} with image`);
     res.status(201).json(obj);
   } catch (error) {
     console.error("❌ Create Product Error:", error);
@@ -232,7 +239,11 @@ app.put("/api/products/:id", upload.single("image"), async (req, res) => {
       productUrl: req.body.productUrl,
     };
 
+    // ✅ If new image provided, update it
     if (req.file) {
+      if (req.file.size > 1 * 1024 * 1024) {
+        return res.status(400).json({ error: "Image size must be less than 1MB" });
+      }
       updateData.image = {
         data: req.file.buffer,
         contentType: req.file.mimetype,
@@ -254,6 +265,7 @@ app.put("/api/products/:id", upload.single("image"), async (req, res) => {
       obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
     }
 
+    console.log(`✅ Product updated: ${updated.name}`);
     res.json(obj);
   } catch (error) {
     console.error("❌ Update Product Error:", error);
@@ -267,7 +279,12 @@ app.delete("/api/products/:id", async (req, res) => {
     const deleted = await Product.findByIdAndDelete(req.params.id);
     if (!deleted) return res.status(404).json({ error: "Not found" });
 
-    res.json({ message: "Deleted", product: deleted.name });
+    console.log(`✅ Product deleted: ${deleted.name}`);
+    res.json({ 
+      message: "Product deleted successfully", 
+      product: deleted.name,
+      id: deleted._id 
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -321,8 +338,13 @@ app.get("/api/products/search/:q", async (req, res) => {
 // ✅ ROOT ENDPOINT
 app.get("/", (req, res) => {
   res.json({
-    message: "SSS Ventures Textile API Server",
+    message: "SSS Ventures Textile API Server - STRICT MODE",
     status: "Running",
+    requirements: {
+      image: "Required (1MB max)",
+      local_storage: "Disabled",
+      operations: "Backend only"
+    },
     endpoints: {
       health: "/api/health",
       products: "/api/products",
@@ -334,6 +356,13 @@ app.get("/", (req, res) => {
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error("🚨 Server Error:", error);
+  
+  if (error instanceof multer.MulterError) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: "Image size must be less than 1MB" });
+    }
+  }
+  
   res.status(500).json({ 
     error: "Internal Server Error",
     message: error.message 
@@ -350,7 +379,9 @@ async function startServer() {
   await connectToDatabase();
   app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🌐 CORS Enabled for: sssventures.in, localhost:5173, localhost:3000`);
+    console.log(`🌐 STRICT MODE: Backend operations only`);
+    console.log(`📸 Image upload: Required (1MB max)`);
+    console.log(`💾 Local storage: Disabled`);
     console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
   });
 }

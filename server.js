@@ -22,7 +22,8 @@ const MONGODB_URI =
 app.use(
   cors({
     origin: [
-      "https://sssventures.in",     // <---- REPLACE WITH YOUR HOSTINGER DOMAIN
+      "https://sssventures.in",
+       "https://www.sssventures.in",     // <---- REPLACE WITH YOUR HOSTINGER DOMAIN
       "http://localhost:5173",
       "http://localhost:3000"
     ],

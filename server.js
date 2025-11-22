@@ -33,7 +33,7 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // Strict 1MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // Strict 1MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     if (allowedTypes.includes(file.mimetype)) {

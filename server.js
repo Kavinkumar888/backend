@@ -3,7 +3,9 @@ import cors from 'cors';
 import multer from 'multer';
 import mongoose from 'mongoose';
 import 'dotenv/config';
+import compression from "compression";
 
+app.use(compression());
 const app = express();
 const PORT = process.env.PORT || 10000;
 
@@ -71,13 +73,7 @@ const productSchema = new mongoose.Schema(
       weave: String,
       finish: String,
     },
-    image: { 
-      data: { type: Buffer, required: true },
-      contentType: { type: String, required: true }
-    },
-    imageUrl: String,
-    productUrl: String,
-    inStock: { type: Boolean, default: true },
+   imageUrl: `/uploads/${req.file.filename}`,
   },
   { timestamps: true }
 );
@@ -113,17 +109,8 @@ app.get("/api/health", async (req, res) => {
 // ---------- GET ALL PRODUCTS ----------
 app.get("/api/products", async (req, res) => {
   try {
-    const products = await Product.find({}).sort({ createdAt: -1 });
+app.use("/uploads", express.static("uploads"));
 
-    const result = products.map((p) => {
-      const obj = p.toObject();
-      if (obj.image && obj.image.data) {
-        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-      }
-      return obj;
-    });
-
-    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

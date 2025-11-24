@@ -1,19 +1,16 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import mongoose from 'mongoose';
-import 'dotenv/config';
+import express from "express";
+import cors from "cors";
+import multer from "multer";
+import mongoose from "mongoose";
 import compression from "compression";
+import "dotenv/config";
 
-app.use(compression());
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// MongoDB URI
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/textile_store?retryWrites=true&w=majority';
-// test change
+// ✅ 1. COMPRESSION (BEST BANG FOR BUCK)
+app.use(compression());
 
-// ✅ CORS CONFIG
 app.use(cors({
   origin: [
     "https://sssventures.in",
@@ -21,40 +18,39 @@ app.use(cors({
     "http://localhost:5173",
     "http://localhost:3000"
   ],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   credentials: true
 }));
 
-app.options('*', cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Middlewares
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+// ✅ 2. STATIC FILES CACHE (BIG IMPACT)
+app.use("/uploads", express.static("uploads", {
+  maxAge: '7d' // 7 days cache for images
+}));
 
-// ✅ STRICT IMAGE UPLOAD - 1MB LIMIT
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // Strict 1MB limit
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only JPG, PNG, and WebP images are allowed'), false);
-    }
+// Multer config
+const storage = multer.diskStorage({
+  destination: "uploads/",
+  filename: (req, file, cb) => {
+    const unique = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, unique + "-" + file.originalname);
   }
 });
 
-// ---------- PRODUCT SCHEMA ----------
+const upload = multer({
+  storage,
+  limits: { fileSize: 1 * 1024 * 1024 },
+});
+
+// Product Schema
 const productSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
-    price: { type: Number, default: 0 },
-    mainCategory: { type: String, required: true },
-    subCategory: { type: String, required: true },
-    nestedCategory: { type: String, default: "" },
+    name: String,
+    price: Number,
+    mainCategory: String,
+    subCategory: String,
+    nestedCategory: String,
     composition: String,
     gsm: String,
     width: String,
@@ -62,316 +58,150 @@ const productSchema = new mongoose.Schema(
     construction: String,
     weave: String,
     finish: String,
-    specifications: {
-      category: String,
-      subCategory: String,
-      composition: String,
-      gsm: String,
-      width: String,
-      count: String,
-      construction: String,
-      weave: String,
-      finish: String,
-    },
-   imageUrl: `/uploads/${req.file.filename}`,
+    specifications: Object,
+    imageUrl: String,
+    productUrl: String,
+    inStock: { type: Boolean, default: true }
   },
   { timestamps: true }
 );
 
+// ✅ 3. DATABASE INDEXES (CRITICAL FOR SPEED)
+productSchema.index({ mainCategory: 1 });
+productSchema.index({ createdAt: -1 });
+productSchema.index({ inStock: 1 });
+
 const Product = mongoose.model("Product", productSchema);
 
-// ---------- DB CONNECT ----------
-async function connectToDatabase() {
+// Connect DB
+async function connectDB() {
   try {
-    await mongoose.connect(MONGODB_URI);
-    console.log("✅ MongoDB Connected Successfully");
-  } catch (error) {
-    console.error("❌ MongoDB Connection Error:", error);
-    process.exit(1);
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log("✅ MongoDB Connected");
+  } catch (err) {
+    console.error("❌ DB Error:", err);
   }
 }
 
-// ---------- HEALTH CHECK ----------
+// Routes
+
+// Health
 app.get("/api/health", async (req, res) => {
-  try {
-    const count = await Product.countDocuments();
-    res.json({
-      status: "OK",
-      database: "MongoDB Atlas",
-      products: count,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    res.status(500).json({ status: "ERROR", error: error.message });
-  }
+  res.json({ status: "OK", time: Date.now() });
 });
 
-// ---------- GET ALL PRODUCTS ----------
+// ✅ 4. OPTIMIZED GET PRODUCTS (BIGGEST IMPACT)
 app.get("/api/products", async (req, res) => {
   try {
-app.use("/uploads", express.static("uploads"));
+    const page = parseInt(req.query.page) || 1;
+    const limit = 24; // Fixed limit for consistency
+    const skip = (page - 1) * limit;
 
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    // ✅ Select only needed fields + lean() for faster queries
+    const products = await Product.find()
+      .select('name price mainCategory subCategory imageUrl inStock')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(); // Converts to plain JS objects (faster)
+
+    // ✅ Cache header for CDN/Browser
+    res.set('Cache-Control', 'public, max-age=120'); // 2 minutes cache
+    
+    res.json({
+      products,
+      pagination: {
+        page,
+        limit,
+        hasMore: products.length === limit
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- GET SINGLE PRODUCT ----------
+// Get single product
 app.get("/api/products/:id", async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
-    if (!product) return res.status(404).json({ error: "Product not found" });
-
-    const obj = product.toObject();
-    if (obj.image && obj.image.data) {
-      obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-    }
-
-    res.json(obj);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const product = await Product.findById(req.params.id).lean();
+    if (!product) return res.status(404).json({ error: "Not found" });
+    
+    res.set('Cache-Control', 'public, max-age=300'); // 5 minutes cache
+    res.json(product);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- STRICT CREATE PRODUCT (IMAGE REQUIRED) ----------
+// Create product
 app.post("/api/products", upload.single("image"), async (req, res) => {
   try {
-    // ✅ STRICT: Image is required
-    if (!req.file) {
-      return res.status(400).json({ error: "Product image is required" });
-    }
+    if (!req.file) return res.status(400).json({ error: "Image required" });
 
-    // ✅ STRICT: Validate file size
-    if (req.file.size > 1 * 1024 * 1024) {
-      return res.status(400).json({ error: "Image size must be less than 1MB" });
-    }
-
-    const imageData = {
-      data: req.file.buffer,
-      contentType: req.file.mimetype,
-    };
-
-    let specifications = {};
+    let specs = {};
     if (req.body.specifications) {
-      try {
-        specifications = typeof req.body.specifications === 'string' 
-          ? JSON.parse(req.body.specifications) 
-          : req.body.specifications;
-      } catch (e) {
-        console.warn("⚠️ Specifications parse error:", e.message);
-      }
+      specs = typeof req.body.specifications === "string" 
+        ? JSON.parse(req.body.specifications) 
+        : req.body.specifications;
     }
 
-    const productData = {
-      name: req.body.name,
-      price: req.body.price ? Number(req.body.price) : 0,
-      mainCategory: req.body.mainCategory,
-      subCategory: req.body.subCategory,
-      nestedCategory: req.body.nestedCategory || "",
-      composition: req.body.composition,
-      gsm: req.body.gsm,
-      width: req.body.width,
-      count: req.body.count,
-      construction: req.body.construction,
-      weave: req.body.weave,
-      finish: req.body.finish,
-      specifications: specifications,
-      productUrl: req.body.productUrl,
-      image: imageData, // ✅ Image is required
-    };
+    const newProduct = new Product({
+      ...req.body,
+      price: Number(req.body.price) || 0,
+      specifications: specs,
+      imageUrl: `/uploads/${req.file.filename}`,
+    });
 
-    const product = new Product(productData);
-    const saved = await product.save();
+    const saved = await newProduct.save();
+    res.status(201).json(saved);
 
-    const obj = saved.toObject();
-    if (obj.image && obj.image.data) {
-      obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-    }
-
-    console.log(`✅ Product created: ${saved.name} with image`);
-    res.status(201).json(obj);
-  } catch (error) {
-    console.error("❌ Create Product Error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- UPDATE PRODUCT ----------
+// Update product
 app.put("/api/products/:id", upload.single("image"), async (req, res) => {
   try {
-    let specifications = {};
+    let specs = {};
     if (req.body.specifications) {
-      try {
-        specifications = typeof req.body.specifications === 'string' 
-          ? JSON.parse(req.body.specifications) 
-          : req.body.specifications;
-      } catch (e) {
-        console.warn("⚠️ Specifications parse error:", e.message);
-      }
+      specs = typeof req.body.specifications === "string"
+        ? JSON.parse(req.body.specifications)
+        : req.body.specifications;
     }
 
     const updateData = {
-      name: req.body.name,
-      price: req.body.price ? Number(req.body.price) : 0,
-      mainCategory: req.body.mainCategory,
-      subCategory: req.body.subCategory,
-      nestedCategory: req.body.nestedCategory || "",
-      composition: req.body.composition,
-      gsm: req.body.gsm,
-      width: req.body.width,
-      count: req.body.count,
-      construction: req.body.construction,
-      weave: req.body.weave,
-      finish: req.body.finish,
-      specifications: specifications,
-      productUrl: req.body.productUrl,
+      ...req.body,
+      price: Number(req.body.price) || 0,
+      specifications: specs,
     };
 
-    // ✅ If new image provided, update it
     if (req.file) {
-      if (req.file.size > 1 * 1024 * 1024) {
-        return res.status(400).json({ error: "Image size must be less than 1MB" });
-      }
-      updateData.image = {
-        data: req.file.buffer,
-        contentType: req.file.mimetype,
-      };
+      updateData.imageUrl = `/uploads/${req.file.filename}`;
     }
 
     const updated = await Product.findByIdAndUpdate(
-      req.params.id, 
-      updateData, 
+      req.params.id,
+      updateData,
       { new: true }
     );
 
-    if (!updated) {
-      return res.status(404).json({ error: "Product not found" });
-    }
+    res.json(updated);
 
-    const obj = updated.toObject();
-    if (obj.image && obj.image.data) {
-      obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-    }
-
-    console.log(`✅ Product updated: ${updated.name}`);
-    res.json(obj);
-  } catch (error) {
-    console.error("❌ Update Product Error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ---------- DELETE PRODUCT ----------
+// Delete product
 app.delete("/api/products/:id", async (req, res) => {
-  try {
-    const deleted = await Product.findByIdAndDelete(req.params.id);
-    if (!deleted) return res.status(404).json({ error: "Not found" });
-
-    console.log(`✅ Product deleted: ${deleted.name}`);
-    res.json({ 
-      message: "Product deleted successfully", 
-      product: deleted.name,
-      id: deleted._id 
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  await Product.findByIdAndDelete(req.params.id);
+  res.json({ message: "Deleted" });
 });
 
-// ---------- CATEGORY FILTER ----------
-app.get("/api/products/category/:cat", async (req, res) => {
-  try {
-    const products = await Product.find({ mainCategory: req.params.cat });
-
-    const result = products.map((p) => {
-      const obj = p.toObject();
-      if (obj.image && obj.image.data) {
-        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-      }
-      return obj;
-    });
-
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ---------- SEARCH ----------
-app.get("/api/products/search/:q", async (req, res) => {
-  try {
-    const q = req.params.q;
-    const products = await Product.find({
-      $or: [
-        { name: { $regex: q, $options: "i" } },
-        { mainCategory: { $regex: q, $options: "i" } },
-        { subCategory: { $regex: q, $options: "i" } }
-      ],
-    });
-
-    const result = products.map((p) => {
-      const obj = p.toObject();
-      if (obj.image && obj.image.data) {
-        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString("base64")}`;
-      }
-      return obj;
-    });
-
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ✅ ROOT ENDPOINT
-app.get("/", (req, res) => {
-  res.json({
-    message: "SSS Ventures Textile API Server - STRICT MODE",
-    status: "Running",
-    requirements: {
-      image: "Required (1MB max)",
-      local_storage: "Disabled",
-      operations: "Backend only"
-    },
-    endpoints: {
-      health: "/api/health",
-      products: "/api/products",
-      documentation: "Visit /api/health for server status"
-    }
-  });
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error("🚨 Server Error:", error);
-  
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: "Image size must be less than 1MB" });
-    }
-  }
-  
-  res.status(500).json({ 
-    error: "Internal Server Error",
-    message: error.message 
-  });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
-});
-
-// ---------- START SERVER ----------
-async function startServer() {
-  await connectToDatabase();
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🌐 STRICT MODE: Backend operations only`);
-    console.log(`📸 Image upload: Required (1MB max)`);
-    console.log(`💾 Local storage: Disabled`);
-    console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
-  });
-}
-
-startServer().catch(console.error);
+// Start server
+connectDB();
+app.listen(PORT, () => console.log(`🚀 Optimized server running on port ${PORT}`));

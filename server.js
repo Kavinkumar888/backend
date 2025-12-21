@@ -6,8 +6,6 @@ import mongoose from "mongoose";
 import compression from "compression";
 import sharp from "sharp";
 import fs from "fs";
-import Razorpay from "razorpay";
-import crypto from "crypto";
 import "dotenv/config";
 
 const app = express();
@@ -16,11 +14,12 @@ const PORT = process.env.PORT || 5000;
 // ------------------------- CORS -------------------------
 app.use(
   cors({
-    origin: "*",
+    origin: process.env.FRONTEND_URL || "*",
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
 app.options("*", cors());
 
 // ------------------------- MIDDLEWARE -------------------------
@@ -28,16 +27,13 @@ app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 app.use("/uploads", express.static("uploads"));
 
-// ------------------------- MONGO CONNECTION -------------------------
+// ------------------------- MONGODB -------------------------
 mongoose
-  .connect(
-    process.env.MONGODB_URI ||
-      "mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/sss_fast"
-  )
+  .connect(process.env.MONGODB_URI)
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.log("❌ Mongo Error:", err.message));
+  .catch((err) => console.error("❌ Mongo Error:", err.message));
 
-// ------------------------- MULTER -------------------------
+// ------------------------- MULTER STORAGE -------------------------
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, "uploads/"),
   filename: (req, file, cb) =>
@@ -46,7 +42,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 1 * 1024 * 1024 },
+  limits: { fileSize: Number(process.env.MAX_FILE_SIZE) || 10485760 },
 });
 
 // ------------------------- PRODUCT SCHEMA -------------------------
@@ -59,21 +55,18 @@ const productSchema = new mongoose.Schema(
     nestedCategory: String,
     specifications: Object,
     productUrl: String,
+
+    // ✅ FRONTEND EXPECTS THIS
     imageUrl: String,
   },
   { timestamps: true }
 );
 
 productSchema.index({ createdAt: -1 });
+
 const Product = mongoose.model("Product", productSchema);
 
-// ------------------------- RAZORPAY -------------------------
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
-
-// ------------------------- HEALTH -------------------------
+// ------------------------- HEALTH CHECK -------------------------
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", time: Date.now() });
 });
@@ -107,18 +100,20 @@ app.get("/api/products", async (req, res) => {
 // ------------------------- CREATE PRODUCT -------------------------
 app.post("/api/products", upload.single("image"), async (req, res) => {
   try {
-    let finalImage = null;
+    let finalImage = "";
 
     if (req.file) {
-      const compressedName = `uploads/${Date.now()}.webp`;
+      const compressedPath = `uploads/${Date.now()}-product.webp`;
 
       await sharp(req.file.path)
         .resize(800)
         .webp({ quality: 70 })
-        .toFile(compressedName);
+        .toFile(compressedPath);
 
       fs.unlinkSync(req.file.path);
-      finalImage = "/" + compressedName;
+
+      // ✅ FRONTEND FRIENDLY
+      finalImage = `/${compressedPath}`;
     }
 
     const product = await Product.create({
@@ -129,11 +124,14 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
       nestedCategory: req.body.nestedCategory,
       specifications: JSON.parse(req.body.specifications || "{}"),
       productUrl: req.body.productUrl,
+
+      // ✅ MATCH FRONTEND
       imageUrl: finalImage,
     });
 
-    res.status(201).json(product);
+    res.status(201).json({ message: "Product created", product });
   } catch (err) {
+    console.error("❌ CREATE ERROR:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -141,85 +139,59 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
 // ------------------------- UPDATE PRODUCT -------------------------
 app.put("/api/products/:id", upload.single("image"), async (req, res) => {
   try {
-    let updateData = {
-      name: req.body.name,
-      price: Number(req.body.price),
-      mainCategory: req.body.mainCategory,
-      subCategory: req.body.subCategory,
-      nestedCategory: req.body.nestedCategory,
-      specifications: JSON.parse(req.body.specifications || "{}"),
-      productUrl: req.body.productUrl,
-    };
+    let finalImage;
 
     if (req.file) {
-      const compressedName = `uploads/${Date.now()}.webp`;
+      const compressedPath = `uploads/${Date.now()}-update.webp`;
 
       await sharp(req.file.path)
         .resize(800)
         .webp({ quality: 70 })
-        .toFile(compressedName);
+        .toFile(compressedPath);
 
       fs.unlinkSync(req.file.path);
-      updateData.imageUrl = "/" + compressedName;
+      finalImage = `/${compressedPath}`;
     }
 
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
-      updateData,
+      {
+        name: req.body.name,
+        price: Number(req.body.price || 0),
+        mainCategory: req.body.mainCategory,
+        subCategory: req.body.subCategory,
+        nestedCategory: req.body.nestedCategory,
+        specifications: JSON.parse(req.body.specifications || "{}"),
+        productUrl: req.body.productUrl,
+
+        ...(finalImage && { imageUrl: finalImage }),
+      },
       { new: true }
     );
 
-    res.json(updated);
+    res.json({ message: "Updated", product: updated });
   } catch (err) {
+    console.error("❌ UPDATE ERROR:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ------------------------- DELETE PRODUCT -------------------------
 app.delete("/api/products/:id", async (req, res) => {
-  await Product.findByIdAndDelete(req.params.id);
-  res.json({ success: true });
-});
-
-// ======================= PAYMENT =======================
-
-// CREATE ORDER
-app.post("/api/payment/create-order", async (req, res) => {
-  const { amount } = req.body;
-
-  const order = await razorpay.orders.create({
-    amount: amount * 100,
-    currency: "INR",
-    receipt: "receipt_" + Date.now(),
-  });
-
-  res.json(order);
-});
-
-// VERIFY PAYMENT
-app.post("/api/payment/verify", (req, res) => {
-  const {
-    razorpay_order_id,
-    razorpay_payment_id,
-    razorpay_signature,
-  } = req.body;
-
-  const sign = razorpay_order_id + "|" + razorpay_payment_id;
-
-  const expected = crypto
-    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-    .update(sign)
-    .digest("hex");
-
-  res.json({ success: expected === razorpay_signature });
+  try {
+    await Product.findByIdAndDelete(req.params.id);
+    res.json({ message: "Deleted" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ------------------------- 404 -------------------------
-app.use((req, res) =>
-  res.status(404).json({ error: "Route Not Found" })
-);
+app.use((req, res) => {
+  res.status(404).json({ error: "Route Not Found" });
+});
 
-// ------------------------- START -------------------------
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Backend running on port ${PORT}`);
+// ------------------------- START SERVER -------------------------
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });

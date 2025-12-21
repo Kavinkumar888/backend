@@ -1,46 +1,55 @@
+// ------------------------- IMPORTS -------------------------
 import express from "express";
 import cors from "cors";
 import multer from "multer";
 import mongoose from "mongoose";
+import compression from "compression";
+import sharp from "sharp";
+import fs from "fs";
+import Razorpay from "razorpay";
+import crypto from "crypto";
 import "dotenv/config";
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 5000;
 
-// ------------------------- MongoDB -------------------------
-const MONGO_URI =
-  process.env.MONGODB_URI ||
-  "mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/sss_venture";
-
-mongoose
-  .connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.log("❌ MongoDB Error:", err));
-
-// ------------------------- Middleware -------------------------
+// ------------------------- CORS -------------------------
 app.use(
   cors({
-    origin: [
-      "https://sssventures.in",
-      "https://www.sssventures.in",
-      "http://localhost:5173",
-      "http://localhost:3000",
-    ],
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+app.options("*", cors());
 
-app.use(express.json({ limit: "20mb" }));
-app.use(express.urlencoded({ extended: true }));
+// ------------------------- MIDDLEWARE -------------------------
+app.use(compression());
+app.use(express.json({ limit: "10mb" }));
+app.use("/uploads", express.static("uploads"));
 
-// ------------------------- Multer (1MB limit) -------------------------
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: { fileSize: 1 * 1024 * 1024 }, // 1MB limit
+// ------------------------- MONGO CONNECTION -------------------------
+mongoose
+  .connect(
+    process.env.MONGODB_URI ||
+      "mongodb+srv://kavi8668182885_db_user:7pnnMgfVvmY9b06r@cluster0.rnt5vif.mongodb.net/sss_fast"
+  )
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch((err) => console.log("❌ Mongo Error:", err.message));
+
+// ------------------------- MULTER -------------------------
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, "uploads/"),
+  filename: (req, file, cb) =>
+    cb(null, Date.now() + "-" + file.originalname.replace(/\s/g, "")),
 });
 
-// ------------------------- Schema -------------------------
+const upload = multer({
+  storage,
+  limits: { fileSize: 1 * 1024 * 1024 },
+});
+
+// ------------------------- PRODUCT SCHEMA -------------------------
 const productSchema = new mongoose.Schema(
   {
     name: String,
@@ -48,66 +57,48 @@ const productSchema = new mongoose.Schema(
     mainCategory: String,
     subCategory: String,
     nestedCategory: String,
-
-    composition: String,
-    gsm: String,
-    width: String,
-    count: String,
-    construction: String,
-    weave: String,
-    finish: String,
-
+    specifications: Object,
     productUrl: String,
-
-    specifications: {
-      composition: String,
-      gsm: String,
-      width: String,
-      count: String,
-      construction: String,
-      weave: String,
-      finish: String,
-    },
-
-    image: {
-      data: Buffer,
-      contentType: String,
-    },
-
     imageUrl: String,
   },
   { timestamps: true }
 );
 
+productSchema.index({ createdAt: -1 });
 const Product = mongoose.model("Product", productSchema);
 
-// ------------------------- Health Check -------------------------
-app.get("/api/health", async (req, res) => {
-  const count = await Product.countDocuments();
-  res.json({ status: "OK", time: Date.now(), products: count });
+// ------------------------- RAZORPAY -------------------------
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// ------------------------- GET ALL PRODUCTS -------------------------
+// ------------------------- HEALTH -------------------------
+app.get("/api/health", (req, res) => {
+  res.json({ status: "OK", time: Date.now() });
+});
+
+// ------------------------- GET PRODUCTS -------------------------
 app.get("/api/products", async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 });
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 100);
+    const skip = (page - 1) * limit;
 
-    const output = products.map((p) => {
-      const obj = p.toObject();
+    const products = await Product.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
-      // convert mongo buffer -> base64
-      if (obj.image?.data) {
-        obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString(
-          "base64"
-        )}`;
-      } else {
-        obj.imageUrl = null;
-      }
+    const total = await Product.countDocuments();
 
-      return obj;
+    res.json({
+      products,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
     });
-
-    res.json({ products: output });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -116,54 +107,33 @@ app.get("/api/products", async (req, res) => {
 // ------------------------- CREATE PRODUCT -------------------------
 app.post("/api/products", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file)
-      return res.status(400).json({ error: "Image is required (max 1MB)" });
+    let finalImage = null;
 
-    let specs = {};
-    try {
-      specs =
-        typeof req.body.specifications === "string"
-          ? JSON.parse(req.body.specifications)
-          : req.body.specifications;
-    } catch {
-      specs = {};
+    if (req.file) {
+      const compressedName = `uploads/${Date.now()}.webp`;
+
+      await sharp(req.file.path)
+        .resize(800)
+        .webp({ quality: 70 })
+        .toFile(compressedName);
+
+      fs.unlinkSync(req.file.path);
+      finalImage = "/" + compressedName;
     }
 
-    const product = new Product({
+    const product = await Product.create({
       name: req.body.name,
-      price: req.body.price ? Number(req.body.price) : 0,
-
+      price: Number(req.body.price || 0),
       mainCategory: req.body.mainCategory,
       subCategory: req.body.subCategory,
       nestedCategory: req.body.nestedCategory,
-
-      composition: req.body.composition,
-      gsm: req.body.gsm,
-      width: req.body.width,
-      count: req.body.count,
-      construction: req.body.construction,
-      weave: req.body.weave,
-      finish: req.body.finish,
-
-      specifications: specs,
+      specifications: JSON.parse(req.body.specifications || "{}"),
       productUrl: req.body.productUrl,
-
-      image: {
-        data: req.file.buffer,
-        contentType: req.file.mimetype,
-      },
+      imageUrl: finalImage,
     });
 
-    const saved = await product.save();
-
-    const obj = saved.toObject();
-    obj.imageUrl = `data:${saved.image.contentType};base64,${saved.image.data.toString(
-      "base64"
-    )}`;
-
-    res.status(201).json({ message: "Product created", product: obj });
+    res.status(201).json(product);
   } catch (err) {
-    console.log("❌ Create Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -171,41 +141,26 @@ app.post("/api/products", upload.single("image"), async (req, res) => {
 // ------------------------- UPDATE PRODUCT -------------------------
 app.put("/api/products/:id", upload.single("image"), async (req, res) => {
   try {
-    let specs = {};
-    try {
-      specs =
-        typeof req.body.specifications === "string"
-          ? JSON.parse(req.body.specifications)
-          : req.body.specifications;
-    } catch {
-      specs = {};
-    }
-
-    const updateData = {
+    let updateData = {
       name: req.body.name,
-      price: req.body.price ? Number(req.body.price) : 0,
-
+      price: Number(req.body.price),
       mainCategory: req.body.mainCategory,
       subCategory: req.body.subCategory,
       nestedCategory: req.body.nestedCategory,
-
-      composition: req.body.composition,
-      gsm: req.body.gsm,
-      width: req.body.width,
-      count: req.body.count,
-      construction: req.body.construction,
-      weave: req.body.weave,
-      finish: req.body.finish,
-
-      specifications: specs,
+      specifications: JSON.parse(req.body.specifications || "{}"),
       productUrl: req.body.productUrl,
     };
 
     if (req.file) {
-      updateData.image = {
-        data: req.file.buffer,
-        contentType: req.file.mimetype,
-      };
+      const compressedName = `uploads/${Date.now()}.webp`;
+
+      await sharp(req.file.path)
+        .resize(800)
+        .webp({ quality: 70 })
+        .toFile(compressedName);
+
+      fs.unlinkSync(req.file.path);
+      updateData.imageUrl = "/" + compressedName;
     }
 
     const updated = await Product.findByIdAndUpdate(
@@ -214,40 +169,57 @@ app.put("/api/products/:id", upload.single("image"), async (req, res) => {
       { new: true }
     );
 
-    if (!updated) return res.status(404).json({ error: "Not found" });
-
-    const obj = updated.toObject();
-    if (obj.image?.data) {
-      obj.imageUrl = `data:${obj.image.contentType};base64,${obj.image.data.toString(
-        "base64"
-      )}`;
-    }
-
-    res.json({ message: "Product updated", product: obj });
+    res.json(updated);
   } catch (err) {
-    console.log("❌ Update Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ------------------------- DELETE PRODUCT -------------------------
 app.delete("/api/products/:id", async (req, res) => {
-  try {
-    const del = await Product.findByIdAndDelete(req.params.id);
-    if (!del) return res.status(404).json({ error: "Not found" });
+  await Product.findByIdAndDelete(req.params.id);
+  res.json({ success: true });
+});
 
-    res.json({ message: "Deleted", id: del._id });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ======================= PAYMENT =======================
+
+// CREATE ORDER
+app.post("/api/payment/create-order", async (req, res) => {
+  const { amount } = req.body;
+
+  const order = await razorpay.orders.create({
+    amount: amount * 100,
+    currency: "INR",
+    receipt: "receipt_" + Date.now(),
+  });
+
+  res.json(order);
+});
+
+// VERIFY PAYMENT
+app.post("/api/payment/verify", (req, res) => {
+  const {
+    razorpay_order_id,
+    razorpay_payment_id,
+    razorpay_signature,
+  } = req.body;
+
+  const sign = razorpay_order_id + "|" + razorpay_payment_id;
+
+  const expected = crypto
+    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+    .update(sign)
+    .digest("hex");
+
+  res.json({ success: expected === razorpay_signature });
 });
 
 // ------------------------- 404 -------------------------
-app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
-});
-
-// ------------------------- Start Server -------------------------
-app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT} (base64 images enabled)`)
+app.use((req, res) =>
+  res.status(404).json({ error: "Route Not Found" })
 );
+
+// ------------------------- START -------------------------
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Backend running on port ${PORT}`);
+});

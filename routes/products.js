@@ -5,102 +5,89 @@ import Product from "../models/Product.js";
 
 const router = express.Router();
 
-/* -------- MULTER CONFIG -------- */
-const upload = multer({
-  dest: "uploads/",
-  limits: {
-    fileSize: Number(process.env.MAX_FILE_SIZE),
-  },
-  fileFilter(req, file, cb) {
-    const allowed = process.env.ALLOWED_FILE_TYPES.split(",");
-    if (!allowed.includes(file.mimetype)) {
-      cb(new Error("Invalid file type"));
-    }
-    cb(null, true);
-  },
-});
+/* 🔥 CACHE */
+let cache = null;
+let cacheTime = 0;
+const CACHE_TTL = 60 * 1000;
 
-/* -------- IMAGE URL GENERATOR -------- */
-const getImageUrl = (req, filename) => {
-  return `${req.protocol}://${req.get("host")}/uploads/${filename}`;
-};
+/* 🔥 MULTER */
+const upload = multer({ dest: "uploads/" });
 
-/* -------- GET PRODUCTS -------- */
+/* 🔥 IMAGE URL */
+const imgUrl = (req, file) =>
+  `${req.protocol}://${req.get("host")}/uploads/${file}`;
+
+/* ================= GET PRODUCTS ================= */
 router.get("/", async (req, res) => {
+  const now = Date.now();
+  if (cache && now - cacheTime < CACHE_TTL) {
+    return res.json(cache);
+  }
+
   const page = Number(req.query.page || 1);
-  const limit = Number(req.query.limit || 100);
+  const limit = Math.min(Number(req.query.limit || 20), 20);
 
   const products = await Product.find()
+    .select("name price image")
+    .sort({ createdAt: -1 })
     .skip((page - 1) * limit)
     .limit(limit)
-    .sort({ createdAt: -1 });
+    .lean();
 
+  cache = products;
+  cacheTime = now;
   res.json(products);
 });
 
-/* -------- SEARCH -------- */
+/* ================= SEARCH ================= */
 router.get("/search", async (req, res) => {
   const q = req.query.q || "";
-  const products = await Product.find({
-    name: { $regex: q, $options: "i" },
-  });
+  const products = await Product.find(
+    { $text: { $search: q } },
+    { score: { $meta: "textScore" } }
+  )
+    .select("name price image")
+    .limit(20)
+    .lean();
+
   res.json(products);
 });
 
-/* -------- CREATE -------- */
+/* ================= CREATE ================= */
 router.post("/", upload.single("image"), async (req, res) => {
   const data = req.body;
-
-  if (data.specifications) {
-    data.specifications = JSON.parse(data.specifications);
-  }
-
-  if (req.file) {
-    data.image = getImageUrl(req, req.file.filename);
-  }
+  if (req.file) data.image = imgUrl(req, req.file.filename);
 
   const product = await Product.create(data);
+  cache = null;
   res.status(201).json(product);
 });
 
-/* -------- UPDATE -------- */
+/* ================= UPDATE ================= */
 router.put("/:id", upload.single("image"), async (req, res) => {
   const data = req.body;
-
-  if (data.specifications) {
-    data.specifications = JSON.parse(data.specifications);
-  }
-
-  if (req.file) {
-    data.image = getImageUrl(req, req.file.filename);
-  }
+  if (req.file) data.image = imgUrl(req, req.file.filename);
 
   const product = await Product.findByIdAndUpdate(req.params.id, data, {
     new: true,
   });
-
+  cache = null;
   res.json(product);
 });
 
-/* -------- DELETE -------- */
+/* ================= DELETE ================= */
 router.delete("/:id", async (req, res) => {
   const product = await Product.findById(req.params.id);
-  if (!product) return res.status(404).json({ message: "Not found" });
+  if (!product) return res.sendStatus(404);
 
   if (product.image) {
-    const filename = product.image.split("/uploads/")[1];
-    const path = `uploads/${filename}`;
-    fs.existsSync(path) && fs.unlinkSync(path);
+    const f = product.image.split("/uploads/")[1];
+    fs.existsSync(`uploads/${f}`) && fs.unlinkSync(`uploads/${f}`);
   }
 
   await product.deleteOne();
+  cache = null;
   res.json({ success: true });
-});
-
-/* -------- EXPORT -------- */
-router.get("/export-products", async (req, res) => {
-  const products = await Product.find();
-  res.json(products);
 });
 
 export default router;

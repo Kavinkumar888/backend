@@ -1,53 +1,47 @@
 import express from "express";
 import cors from "cors";
 import mongoose from "mongoose";
+import compression from "compression";
 import dotenv from "dotenv";
 import productRoutes from "./routes/products.js";
 
 dotenv.config();
-
 const app = express();
 
-/* -------- NO CACHE (304 FIX) -------- */
-app.use((req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  next();
-});
+/* 🔥 SPEED */
+app.use(compression());
+app.use(express.json());
 
-/* -------- CORS -------- */
+/* 🔥 CORS */
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    origin: process.env.FRONTEND_URL || "*",
   })
 );
 
-/* -------- BODY -------- */
-app.use(express.json());
-
-/* -------- STATIC FILES -------- */
+/* 🔥 STATIC */
 app.use("/uploads", express.static("uploads"));
 
-/* -------- MONGO -------- */
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error("❌ Mongo Error", err));
+/* 🔥 MONGO (RAM SAFE) */
+mongoose.connect(process.env.MONGODB_URI, {
+  maxPoolSize: 5,
+  serverSelectionTimeoutMS: 5000,
+});
+mongoose.connection.once("open", () =>
+  console.log("✅ MongoDB Connected")
+);
 
-/* -------- HEALTH -------- */
+/* 🔥 HEALTH */
 app.get("/api/health", (req, res) => {
-  res.json({
-    status: "OK",
-    env: process.env.NODE_ENV,
-    time: new Date(),
-  });
+  res.json({ status: "OK", time: Date.now() });
 });
 
-/* -------- ROUTES -------- */
+/* 🔥 ROUTES */
 app.use("/api/products", productRoutes);
 
-/* -------- START -------- */
+/* 🔥 START */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Backend running on port ${PORT}`);
-});
+const server = app.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 Backend running on ${PORT}`)
+);
+server.setTimeout(60000);

@@ -2,14 +2,9 @@ import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
+    name: { type: String, required: true, index: true },
     price: { type: Number, required: true },
-    description: String,
-
-    // FULL IMAGE URL SAVE AAGUM
     image: String,
-
-    specifications: Object,
   },
   { timestamps: true }
 );
